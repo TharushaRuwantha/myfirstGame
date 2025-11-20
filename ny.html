@@ -1,0 +1,373 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Balloon Pop — Slice Game</title>
+  <style>
+    :root{--bg:#0b1220;--panel:#0f1724;--muted:#98a0b3}
+    html,body{height:100%;margin:0;font-family:Inter,system-ui,Segoe UI,Roboto,"Helvetica Neue",Arial}
+    body{display:flex;align-items:center;justify-content:center;background:linear-gradient(180deg,#071025 0%,#0b1530 100%);color:#fff}
+    .wrap{width:min(980px,96vw);height:min(720px,86vh);background:linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));border-radius:12px;box-shadow:0 8px 40px rgba(2,6,23,0.6);padding:14px;display:flex;flex-direction:column}
+    header{display:flex;align-items:center;justify-content:space-between;padding:6px 10px}
+    header .title{font-weight:600;letter-spacing:0.6px}
+    header .info{font-size:14px;color:var(--muted)}
+    #gameCanvas{flex:1;border-radius:8px;background:linear-gradient(180deg,#0b2040 0%, #08304b 100%);display:block}
+    .overlay{position:relative;margin-top:10px;display:flex;gap:10px;align-items:center}
+    .btn{background:#0ea5a4;padding:8px 12px;border-radius:8px;color:#042;cursor:pointer;border:none;font-weight:600}
+    .panel{display:flex;gap:8px;align-items:center}
+    .center-screen{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;pointer-events:none}
+    .menu{pointer-events:auto;background:rgba(4,10,20,0.72);padding:18px;border-radius:12px;text-align:center}
+    .menu h2{margin:0 0 8px 0}
+    .menu p{color:var(--muted);margin:0 0 12px}
+    .small{font-size:13px;color:var(--muted)}
+    footer{display:flex;justify-content:space-between;align-items:center;margin-top:8px;color:var(--muted);font-size:13px}
+    @media (max-width:600px){.wrap{height:82vh}}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <div class="title">Balloon Pop — Slice Game</div>
+      <div class="info">Score: <span id="score">0</span> &nbsp;•&nbsp; Lives: <span id="lives">3</span></div>
+    </header>
+
+    <canvas id="gameCanvas"></canvas>
+
+    <div class="overlay">
+      <div class="panel">
+        <button id="startBtn" class="btn">Start Game</button>
+        <button id="pauseBtn" class="btn" style="display:none;">Pause</button>
+      </div>
+      <div class="small">Swipe or drag your mouse across balloons to pop them. Don't miss too many!</div>
+    </div>
+
+    <div class="center-screen">
+      <div id="menu" class="menu">
+        <h2>Balloon Pop</h2>
+        <p>Slice balloons by swiping. Pop combos for extra score. Mobile & desktop supported.</p>
+        <div style="display:flex;gap:10px;justify-content:center">
+          <button id="menuStart" class="btn">Play</button>
+          <button id="menuRules" class="btn" style="background:#ffb86b;color:#2b0b00">Rules</button>
+        </div>
+      </div>
+    </div>
+
+    <footer>
+      <div class="small">Made with ❤️ — No external assets</div>
+      <div class="small">High score: <span id="best">0</span></div>
+    </footer>
+  </div>
+
+<script>
+(() => {
+  const canvas = document.getElementById('gameCanvas');
+  const ctx = canvas.getContext('2d');
+  const scoreEl = document.getElementById('score');
+  const livesEl = document.getElementById('lives');
+  const bestEl = document.getElementById('best');
+  const startBtn = document.getElementById('startBtn');
+  const pauseBtn = document.getElementById('pauseBtn');
+  const menu = document.getElementById('menu');
+  const menuStart = document.getElementById('menuStart');
+  const menuRules = document.getElementById('menuRules');
+
+  let W = 800, H = 520;
+  function resize(){
+    const rect = canvas.getBoundingClientRect();
+    canvas.width = rect.width * devicePixelRatio;
+    canvas.height = rect.height * devicePixelRatio;
+    ctx.setTransform(devicePixelRatio,0,0,devicePixelRatio,0,0);
+  }
+
+  // set sizes
+  function setCanvasSize(){
+    const wrap = document.querySelector('.wrap');
+    const availableW = wrap.clientWidth - 28; // padding
+    const availableH = wrap.clientHeight - 110;
+    canvas.style.width = availableW + 'px';
+    canvas.style.height = availableH + 'px';
+    resize();
+    W = canvas.width / devicePixelRatio;
+    H = canvas.height / devicePixelRatio;
+  }
+  window.addEventListener('resize', setCanvasSize);
+  setCanvasSize();
+
+  // Game state
+  let balloons = [];
+  let particles = [];
+  let running = false;
+  let paused = false;
+  let lastTime = 0;
+  let spawnTimer = 0;
+  let score = 0;
+  let lives = 3;
+  let best = Number(localStorage.getItem('balloonBest')||0);
+  bestEl.textContent = best;
+
+  // trail for slice
+  const trail = []; // {x,y,t}
+  const trailMax = 12;
+  const sliceLife = 120; // ms
+
+  // utilities
+  function rand(a,b){return a + Math.random()*(b-a)}
+  function choose(arr){return arr[Math.floor(Math.random()*arr.length)]}
+
+  // Balloon class
+  class Balloon{
+    constructor(){
+      this.r = rand(22,44);
+      this.x = rand(this.r, W - this.r);
+      this.y = H + this.r + rand(0,120);
+      this.vx = rand(-30,30);
+      this.vy = -rand(80,130);
+      this.ay = 30; // gravity opposite (so goes up slower)
+      this.color = choose(['#ff6b6b','#ffd166','#6bcB77','#6b9cff','#c56bff']);
+      this.popped = false;
+      this.spawnTime = performance.now();
+      this.points = Math.round(100 * (this.r/40));
+      this.comboed = false;
+    }
+    update(dt){
+      this.vy += this.ay * dt;
+      this.x += this.vx * dt;
+      this.y += this.vy * dt;
+      // walls
+      if(this.x < this.r) { this.x = this.r; this.vx *= -0.6 }
+      if(this.x > W - this.r) { this.x = W - this.r; this.vx *= -0.6 }
+    }
+    draw(ctx){
+      ctx.save();
+      // body
+      ctx.beginPath();
+      ctx.ellipse(this.x, this.y, this.r, this.r*1.12, 0, 0, Math.PI*2);
+      ctx.fillStyle = this.color;
+      ctx.fill();
+      // highlight
+      ctx.beginPath();
+      ctx.ellipse(this.x - this.r*0.25, this.y - this.r*0.45, this.r*0.18, this.r*0.28, 0, 0, Math.PI*2);
+      ctx.fillStyle = 'rgba(255,255,255,0.25)';
+      ctx.fill();
+      // string
+      ctx.beginPath();
+      ctx.moveTo(this.x, this.y + this.r*0.9);
+      ctx.quadraticCurveTo(this.x+6, this.y + this.r*1.6, this.x, this.y + this.r*2.4);
+      ctx.strokeStyle = 'rgba(200,200,200,0.25)';
+      ctx.lineWidth = 1.8;
+      ctx.stroke();
+      ctx.restore();
+    }
+  }
+
+  // Particles for pop
+  class Particle{
+    constructor(x,y,color){
+      this.x = x; this.y = y; this.vx = rand(-160,160); this.vy = rand(-240,20);
+      this.life = rand(300,700); this.age = 0; this.color = color; this.r = rand(2,6);
+    }
+    update(dt){ this.x += this.vx * dt; this.y += this.vy * dt; this.vy += 200*dt; this.age += dt*1000 }
+    draw(ctx){ const a = Math.max(0,1 - this.age/this.life); ctx.globalAlpha = a; ctx.fillStyle = this.color; ctx.beginPath(); ctx.arc(this.x,this.y,this.r,0,Math.PI*2); ctx.fill(); ctx.globalAlpha = 1 }
+  }
+
+  // Sound using WebAudio simple pop
+  const AudioCtx = window.AudioContext || window.webkitAudioContext;
+  const audioCtx = AudioCtx ? new AudioCtx() : null;
+  function popSound(){
+    if(!audioCtx) return;
+    const o = audioCtx.createOscillator();
+    const g = audioCtx.createGain();
+    o.type = 'triangle';
+    o.frequency.value = rand(400,700);
+    g.gain.value = 0.001;
+    o.connect(g); g.connect(audioCtx.destination);
+    o.start();
+    g.gain.exponentialRampToValueAtTime(0.15, audioCtx.currentTime + 0.001);
+    g.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + 0.25);
+    o.frequency.exponentialRampToValueAtTime(200, audioCtx.currentTime + 0.25);
+    o.stop(audioCtx.currentTime + 0.26);
+  }
+
+  // collision: check if any segment of trail intersects balloon
+  function segmentCircleIntersect(x1,y1,x2,y2,cx,cy,r){
+    // closest point on segment to circle center
+    const vx = x2-x1, vy = y2-y1;
+    const wx = cx - x1, wy = cy - y1;
+    const proj = (vx*wx + vy*wy) / (vx*vx + vy*vy || 1);
+    const t = Math.max(0, Math.min(1, proj));
+    const px = x1 + vx * t, py = y1 + vy * t;
+    const dx = px - cx, dy = py - cy;
+    return (dx*dx + dy*dy) <= r*r;
+  }
+
+  // input handling
+  let isDown = false;
+  function addTrail(x,y){
+    trail.push({x,y,t:performance.now()});
+    if(trail.length > trailMax) trail.shift();
+  }
+
+  function handlePointerDown(e){
+    isDown = true; const p = pointerPos(e); addTrail(p.x,p.y);
+  }
+  function handlePointerMove(e){ if(!isDown) return; const p = pointerPos(e); addTrail(p.x,p.y); }
+  function handlePointerUp(e){ isDown = false; trail.length = 0 }
+
+  function pointerPos(e){
+    const rect = canvas.getBoundingClientRect();
+    const touch = e.touches ? e.touches[0] : (e.changedTouches ? e.changedTouches[0] : null);
+    const clientX = touch ? touch.clientX : e.clientX;
+    const clientY = touch ? touch.clientY : e.clientY;
+    return { x: (clientX - rect.left), y: (clientY - rect.top) };
+  }
+
+  // attach events
+  canvas.addEventListener('mousedown', handlePointerDown);
+  window.addEventListener('mousemove', handlePointerMove);
+  window.addEventListener('mouseup', handlePointerUp);
+  canvas.addEventListener('touchstart', (e)=>{ e.preventDefault(); handlePointerDown(e) }, {passive:false});
+  canvas.addEventListener('touchmove', (e)=>{ e.preventDefault(); handlePointerMove(e) }, {passive:false});
+  canvas.addEventListener('touchend', (e)=>{ e.preventDefault(); handlePointerUp(e) }, {passive:false});
+
+  // Game controls
+  startBtn.addEventListener('click', startGame);
+  menuStart.addEventListener('click', startGame);
+  menuRules.addEventListener('click', ()=>{
+    alert('Rules:\n\n- Slice balloons by dragging across them.\n- Each popped balloon gives points.\n- If a balloon reaches the top without popping you lose a life.\n- Game ends when lives reach 0.\n- Pop multiple balloons in a short slice for combos!');
+  });
+  pauseBtn.addEventListener('click', ()=>{ paused = !paused; pauseBtn.textContent = paused ? 'Resume' : 'Pause' });
+
+  function startGame(){
+    balloons.length = 0; particles.length = 0; score = 0; lives = 3; spawnTimer = 0; running = true; paused = false; menu.style.display = 'none'; startBtn.style.display = 'none'; pauseBtn.style.display = 'inline-block'; updateHud(); lastTime = performance.now(); if(audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+  }
+
+  function endGame(){ running = false; menu.style.display = 'block'; menu.innerHTML = `<h2>Game Over</h2><p>Your score: ${score}</p><p>Best: ${best}</p><div style="display:flex;gap:8px;justify-content:center;margin-top:8px"><button id=playAgain class=btn>Play again</button></div>`;
+    document.getElementById('playAgain').addEventListener('click', ()=>{ menu.innerHTML = ` <h2>Balloon Pop</h2><p>Slice balloons by swiping. Pop combos for extra score. Mobile & desktop supported.</p><div style="display:flex;gap:10px;justify-content:center"><button id="menuStart2" class="btn">Play</button><button id="menuRules2" class="btn" style="background:#ffb86b;color:#2b0b00">Rules</button></div>`; document.getElementById('menuStart2').addEventListener('click', startGame); document.getElementById('menuRules2').addEventListener('click', ()=>menuRules.click()); })
+  }
+
+  function updateHud(){ scoreEl.textContent = score; livesEl.textContent = lives; }
+
+  // spawn logic
+  function spawnBalloon(){ const b = new Balloon(); balloons.push(b); }
+
+  function update(dt){
+    if(!running || paused) return;
+    // spawn cadence increases
+    spawnTimer += dt;
+    const interval = Math.max(0.4, 1.4 - score/1500); // faster as score grows
+    if(spawnTimer > interval){ spawnTimer = 0; // spawn 1-3
+      const n = Math.random() < 0.16 ? 2 : 1;
+      for(let i=0;i<n;i++) spawnBalloon(); }
+
+    // update balloons
+    for(let i=balloons.length-1;i>=0;i--){ const b = balloons[i]; b.update(dt);
+      // if balloon goes above top (y < -r) then lose life
+      if(b.y + b.r < -20){ if(!b.popped){ lives--; updateHud(); } balloons.splice(i,1); if(lives <=0){ if(score>best){ best = score; localStorage.setItem('balloonBest',best) } endGame(); } }
+    }
+
+    // update particles
+    for(let i=particles.length-1;i>=0;i--){ const p = particles[i]; p.update(dt); if(p.age > p.life) particles.splice(i,1); }
+
+    // slice processing: look at recent trail segments
+    const now = performance.now();
+    // remove old trail points
+    while(trail.length && now - trail[0].t > sliceLife) trail.shift();
+    for(let i=0;i<balloons.length;i++){
+      const b = balloons[i]; if(b.popped) continue;
+      // check segments
+      for(let j=0;j<trail.length-1;j++){
+        const A = trail[j], B = trail[j+1];
+        if(segmentCircleIntersect(A.x,A.y,B.x,B.y,b.x,b.y,b.r)){
+          // pop
+          b.popped = true;
+          // create particles
+          for(let k=0;k<16;k++) particles.push(new Particle(b.x, b.y, b.color));
+          popSound();
+          // scoring: base + combo bonus if multiple popped by same slice
+          let poppedCount = 1;
+          // also check other balloons overlapping slice moments to count combos
+          // we'll mark them popped in same loop
+          for(let m=i+1;m<balloons.length;m++){
+            const b2 = balloons[m]; if(b2.popped) continue;
+            // check if any segment intersects b2 too
+            for(let s=0;s<trail.length-1;s++){
+              const A2 = trail[s], B2 = trail[s+1];
+              if(segmentCircleIntersect(A2.x,A2.y,B2.x,B2.y,b2.x,b2.y,b2.r)){
+                b2.popped = true; poppedCount++; for(let k=0;k<12;k++) particles.push(new Particle(b2.x,b2.y,b2.color)); break;
+              }
+            }
+          }
+          // award points
+          const gain = b.points * poppedCount * (poppedCount>1 ? poppedCount : 1);
+          score += gain;
+          updateHud();
+          // remove popped balloons
+          balloons = balloons.filter(x=>!x.popped);
+          break;
+        }
+      }
+    }
+  }
+
+  function draw(){
+    // background
+    ctx.clearRect(0,0,W,H);
+    // subtle gradient
+    const g = ctx.createLinearGradient(0,0,0,H);
+    g.addColorStop(0,'rgba(8,24,44,0.2)'); g.addColorStop(1,'rgba(2,12,30,0.2)');
+    ctx.fillStyle = g; ctx.fillRect(0,0,W,H);
+
+    // balloons
+    for(const b of balloons) b.draw(ctx);
+
+    // particles
+    for(const p of particles) p.draw(ctx);
+
+    // draw slice trail
+    if(trail.length>1){ ctx.lineWidth = 10; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+      // fade trail
+      for(let i=0;i<trail.length-1;i++){
+        const a = trail[i], b = trail[i+1];
+        const alpha = (i / trail.length);
+        ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.strokeStyle = `rgba(255,255,255,${0.25 * (1-alpha)})`; ctx.stroke();
+      }
+    }
+
+    // top HUD: combo hint if multiple recently popped
+    ctx.fillStyle = 'rgba(255,255,255,0.06)'; ctx.fillRect(8,8,160,36);
+  }
+
+  function loop(ts){
+    if(!lastTime) lastTime = ts; const dt = Math.min(0.05, (ts-lastTime)/1000); lastTime = ts;
+    
+    if(running){
+      update(dt);
+    } else {
+      // Menu mode - show demo balloons
+      if(Math.random() < 0.02) balloons.push(new Balloon());
+      for(let i=balloons.length-1;i>=0;i--){ 
+        const b = balloons[i]; 
+        b.update(dt); 
+        if(b.y + b.r < -60) balloons.splice(i,1);
+      }
+      particles = particles.filter(p=>p.age < p.life);
+    }
+    
+    draw();
+    requestAnimationFrame(loop);
+  }
+
+  // Start the single animation loop
+  requestAnimationFrame(loop);
+
+  // initial setup: responsive
+  setCanvasSize();
+
+  // expose quick debug
+  window.__game = {start:startGame, end:endGame};
+
+})();
+</script>
+</body>
+</html>
